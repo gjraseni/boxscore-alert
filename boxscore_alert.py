@@ -36,9 +36,10 @@ TEAMS = {
 # Mittente e destinatario arrivano dai "Secrets" di GitHub (non sono scritti nel codice).
 # Fase di test:  mittente gjraseni@gmail.com  ->  destinatario gajaraseni@gmail.com
 # Fase finale:   destinatario maxraseni@gmail.com (basta cambiare il secret RECIPIENT_EMAIL)
-SENDER = os.environ.get("SENDER_EMAIL")
-RECIPIENT = os.environ.get("RECIPIENT_EMAIL")
-APP_PASSWORD = os.environ.get("GMAIL_APP_PASSWORD")  # segreto: mai scritto nel codice
+SENDER = (os.environ.get("SENDER_EMAIL") or "").strip()
+RECIPIENT = (os.environ.get("RECIPIENT_EMAIL") or "").strip()
+# segreto: mai scritto nel codice. Togliamo eventuali spazi/a capo incollati per sbaglio.
+APP_PASSWORD = "".join((os.environ.get("GMAIL_APP_PASSWORD") or "").split())
 
 # TEST_MODE=1 -> invia subito l'ultima partita finita di ogni squadra (ultimi 30 giorni),
 # anche se era già stata inviata, e non aggiorna la memoria. Serve per le prove.
@@ -207,9 +208,25 @@ def send_email(subject, html):
     msg = MIMEMultipart("alternative")
     msg["Subject"], msg["From"], msg["To"] = subject, f"Box Score Bot <{SENDER}>", RECIPIENT
     msg.attach(MIMEText(html, "html", "utf-8"))
-    with smtplib.SMTP_SSL("smtp.gmail.com", 465) as s:
-        s.login(SENDER, APP_PASSWORD)
-        s.send_message(msg)
+    errors = []
+    # Gmail accetta due modalità: SSL sulla porta 465 oppure STARTTLS sulla 587.
+    for mode in ("ssl465", "starttls587"):
+        try:
+            if mode == "ssl465":
+                s = smtplib.SMTP_SSL("smtp.gmail.com", 465, timeout=30)
+            else:
+                s = smtplib.SMTP("smtp.gmail.com", 587, timeout=30)
+                s.ehlo(); s.starttls(); s.ehlo()
+            with s:
+                s.login(SENDER, APP_PASSWORD)
+                s.send_message(msg)
+            return
+        except smtplib.SMTPAuthenticationError as e:
+            raise RuntimeError("Gmail ha RIFIUTATO le credenziali: controlla SENDER_EMAIL e "
+                               f"GMAIL_APP_PASSWORD ({e.smtp_code} {e.smtp_error!r})")
+        except Exception as e:
+            errors.append(f"{mode}: {type(e).__name__}: {e}")
+    raise RuntimeError("Invio fallito -> " + " | ".join(errors))
 
 
 # ---------------------------------------------------------------------------
@@ -220,6 +237,8 @@ def main():
         raise SystemExit("Mancano SENDER_EMAIL / RECIPIENT_EMAIL / GMAIL_APP_PASSWORD nei Secrets.")
     sent = set(json.loads(STATE_FILE.read_text())) if STATE_FILE.exists() else set()
     print("Modalità TEST" if TEST_MODE else "Modalità normale")
+    print(f"Mittente: {SENDER} | Destinatario: {RECIPIENT} | "
+          f"Password app: {len(APP_PASSWORD)} caratteri (devono essere 16)")
     for team_id, info in TEAMS.items():
         try:
             games = fetch_finished_games(team_id, days_back=30 if TEST_MODE else 2)
@@ -240,7 +259,7 @@ def main():
             if not games:
                 print(f"  Nessuna partita nuova per {info['name']}")
         except Exception as e:  # un errore su una squadra non blocca le altre
-            print(f"  ERRORE con {info['name']}: {e}")
+            print(f"  ERRORE con {info['name']}: {type(e).__name__}: {e}")
     if not TEST_MODE:
         STATE_FILE.write_text(json.dumps(sorted(sent), indent=1))
 
