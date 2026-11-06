@@ -1,0 +1,36 @@
+name: Box Score Alert
+
+on:
+  schedule:
+    - cron: "*/30 * * * *"   # ogni 30 minuti
+  workflow_dispatch:          # pulsante "Run workflow" per lanciarlo a mano
+    inputs:
+      test_mode:
+        description: "Modalità test (invia l'ultima partita di ogni squadra)"
+        type: boolean
+        default: true
+
+permissions:
+  contents: write             # serve per salvare sent_games.json
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Controlla partite e invia email
+        env:
+          SENDER_EMAIL: ${{ secrets.SENDER_EMAIL }}
+          RECIPIENT_EMAIL: ${{ secrets.RECIPIENT_EMAIL }}
+          GMAIL_APP_PASSWORD: ${{ secrets.GMAIL_APP_PASSWORD }}
+          TEST_MODE: ${{ github.event.inputs.test_mode == 'true' && '1' || '0' }}
+        run: python boxscore_alert.py
+      - name: Salva la memoria delle partite inviate
+        run: |
+          git config user.name "boxscore-bot"
+          git config user.email "boxscore-bot@users.noreply.github.com"
+          git add sent_games.json 2>/dev/null || true
+          git diff --cached --quiet || (git commit -m "Aggiorna partite inviate" && git push)
